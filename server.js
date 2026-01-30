@@ -67,11 +67,20 @@ all_paths.forEach(pathConfig => {
 });
 
 
-// 统一静态文件服务中间件 - 修改后的版本
+// server.js - 修改缩略图选项构建部分以支持更高品质
 const createStaticFileHandler = (originType) => {
   return async (req, res, next) => {
     try {
-      const { root: rootId = '0', thumb, width, height, quality, ...queryParams } = req.query;
+      const { 
+        root: rootId = '0', 
+        thumb, 
+        width, 
+        height, 
+        quality, 
+        sharpen,
+        ...queryParams 
+      } = req.query;
+      
       const requestPath = req.path;
       
       if (!requestPath || requestPath === '/') {
@@ -137,30 +146,47 @@ const createStaticFileHandler = (originType) => {
         });
       }
       
-     // 获取文件扩展名
+      // 获取文件扩展名
       const ext = path.extname(fullPath).toLowerCase();
       
       // 图片文件处理逻辑
-      const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'];
+      const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.tif'];
       
       if (imageExtensions.includes(ext)) {
         // 检查是否请求缩略图
         const useThumbnail = thumb === 'true' || thumb === '1' || width || height;
         
         if (useThumbnail) {
-          // 构建缩略图选项
+          // 构建缩略图选项 - 使用更高的默认值
           const thumbOptions = {};
           
+          // 如果未指定尺寸，使用1920x1920作为默认
           if (width && !isNaN(width)) {
             thumbOptions.width = parseInt(width);
+          } else {
+            thumbOptions.width = 1920; // 默认宽度
           }
           
           if (height && !isNaN(height)) {
             thumbOptions.height = parseInt(height);
+          } else {
+            thumbOptions.height = 1920; // 默认高度
           }
           
           if (quality && !isNaN(quality)) {
-            thumbOptions.quality = Math.min(100, Math.max(10, parseInt(quality)));
+            thumbOptions.quality = Math.min(100, Math.max(50, parseInt(quality))); // 最低质量50
+          } else {
+            thumbOptions.quality = 95; // 默认质量
+          }
+          
+          // 是否锐化
+          if (sharpen === 'true') {
+            thumbOptions.sharpen = true;
+          }
+          
+          // 对于TIFF格式，使用更高的质量
+          if (ext === '.tiff' || ext === '.tif') {
+            thumbOptions.quality = Math.max(thumbOptions.quality, 98);
           }
           
           try {
@@ -170,6 +196,8 @@ const createStaticFileHandler = (originType) => {
             // 设置缓存头（缩略图可长期缓存）
             res.setHeader('Cache-Control', 'public, max-age=31536000');
             res.setHeader('X-Image-Type', 'thumbnail');
+            res.setHeader('X-Thumbnail-Quality', `${thumbOptions.quality}%`);
+            res.setHeader('X-Thumbnail-Dimensions', `${thumbOptions.width}x${thumbOptions.height}`);
             
             // 编码文件路径以避免无效字符
             try {
@@ -200,6 +228,8 @@ const createStaticFileHandler = (originType) => {
         '.gif': 'image/gif',
         '.webp': 'image/webp',
         '.bmp': 'image/bmp',
+        '.tiff': 'image/tiff',
+        '.tif': 'image/tiff',
         
         // 视频格式
         '.mp4': 'video/mp4',

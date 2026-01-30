@@ -36,7 +36,7 @@ function normalizeImages(images) {
   });
 }
 
-// 构建缩略图URL
+// 构建缩略图URL - 使用更高的分辨率和质量
 function buildThumbnailUrl(rootId, relativePath, filename, origin = 'cosergirl', options = {}) {
   if (!relativePath || !filename) return null;
   
@@ -49,12 +49,34 @@ function buildThumbnailUrl(rootId, relativePath, filename, origin = 'cosergirl',
   queryParams.append('path', encodedPath);
   queryParams.append('thumb', 'true');
   
-  // 添加缩略图选项
-  if (options.width) queryParams.append('width', options.width);
-  if (options.height) queryParams.append('height', options.height);
-  if (options.quality) queryParams.append('quality', options.quality);
+  // 添加更高的缩略图选项
+  const defaultOptions = {
+    width: 1920,
+    height: 1920,
+    quality: 95,
+    sharpen: 'true', // 添加锐化参数
+    ...options
+  };
+  
+  queryParams.append('width', defaultOptions.width);
+  queryParams.append('height', defaultOptions.height);
+  queryParams.append('quality', defaultOptions.quality);
+  
+  if (defaultOptions.sharpen === 'true') {
+    queryParams.append('sharpen', 'true');
+  }
   
   return `/api/proxy/file?${queryParams.toString()}`;
+}
+
+// 构建高品质缩略图URL（用于重要图片）
+function buildHighQualityThumbnailUrl(rootId, relativePath, filename, origin = 'cosergirl') {
+  return buildThumbnailUrl(rootId, relativePath, filename, origin, {
+    width: 2560,
+    height: 2560,
+    quality: 98,
+    sharpen: 'true'
+  });
 }
 
 // 修改构建文件URL的函数
@@ -158,17 +180,25 @@ const getAllCosergirl = async (req, res) => {
       if (pathConfig) {
         // ... 基础路径信息保持不变 ...
         
-        // 为第一张图片构建封面图URL（使用缩略图）
+        // 为第一张图片构建封面图URL（使用更高分辨率的缩略图）
         if (result.images && result.images.length > 0) {
           const firstImage = result.images[0];
           
-          // 构建缩略图URL作为封面
+          // 构建高品质缩略图URL作为封面
           result.coverImage = buildThumbnailUrl(
             pathConfig.id, 
             item.path, 
             firstImage.path, 
             pathConfig.origin,
-            { width: 400, height: 400, quality: 80 } // 封面图使用较小的尺寸
+            { width: 1200, height: 1200, quality: 95, sharpen: 'true' } // 封面图使用1200x1200，质量95%
+          );
+          
+          // 构建超高品质缩略图URL（备用）
+          result.coverImageHQ = buildHighQualityThumbnailUrl(
+            pathConfig.id, 
+            item.path, 
+            firstImage.path, 
+            pathConfig.origin
           );
           
           // 构建原图URL
@@ -185,7 +215,7 @@ const getAllCosergirl = async (req, res) => {
           
           // 如果需要包含完整文件信息
           if (shouldIncludeFiles) {
-            // 为所有图片构建URL（包含缩略图和原图）
+            // 为所有图片构建URL（包含多种质量的缩略图和原图）
             result.imagesWithUrls = result.images.map(image => ({
               ...image,
               url: buildFileUrl(  // 原图URL
@@ -194,12 +224,18 @@ const getAllCosergirl = async (req, res) => {
                 image.path,
                 pathConfig.origin
               ),
-              thumbnail: buildThumbnailUrl(  // 缩略图URL
+              thumbnail: buildThumbnailUrl(  // 标准缩略图URL - 使用1920x1920，质量95%
                 pathConfig.id,
                 item.path,
                 image.path,
                 pathConfig.origin,
-                { width: 800, height: 800, quality: 85 }
+                { width: 1920, height: 1920, quality: 95, sharpen: 'true' }
+              ),
+              thumbnailHQ: buildHighQualityThumbnailUrl(  // 高品质缩略图URL
+                pathConfig.id,
+                item.path,
+                image.path,
+                pathConfig.origin
               ),
               proxyUrl: buildFileUrl(
                 pathConfig.id,
@@ -233,7 +269,8 @@ const getAllCosergirl = async (req, res) => {
               ...(result.imagesWithUrls || []).map(img => ({ 
                 ...img, 
                 type: 'image',
-                thumbnail: img.thumbnail // 包含缩略图
+                thumbnail: img.thumbnail, // 标准缩略图
+                thumbnailHQ: img.thumbnailHQ // 高品质缩略图
               })),
               ...(result.videosWithUrls || []).map(vid => ({ 
                 ...vid, 
@@ -317,7 +354,7 @@ const getCosergirlById = async (req, res) => {
         fullPath: data.path ? path.join(pathConfig.path, data.path) : pathConfig.path
       };
       
-       // 处理图片（包含缩略图）
+      // 处理图片（包含多种质量的缩略图）
       if (result.images && result.images.length > 0) {
         result.imagesWithUrls = result.images.map(image => ({
           ...image,
@@ -327,12 +364,18 @@ const getCosergirlById = async (req, res) => {
             image.path,
             pathConfig.origin
           ),
-          thumbnail: buildThumbnailUrl(  // 缩略图URL
+          thumbnail: buildThumbnailUrl(  // 标准缩略图URL - 使用1920x1920，质量95%
             pathConfig.id,
             data.path,
             image.path,
             pathConfig.origin,
-            { width: 800, height: 800, quality: 85 }
+            { width: 1920, height: 1920, quality: 95, sharpen: 'true' }
+          ),
+          thumbnailHQ: buildHighQualityThumbnailUrl(  // 高品质缩略图URL
+            pathConfig.id,
+            data.path,
+            image.path,
+            pathConfig.origin
           ),
           proxyUrl: buildFileUrl(
             pathConfig.id,
@@ -342,10 +385,10 @@ const getCosergirlById = async (req, res) => {
           )
         }));
         
-        // 封面图片（使用缩略图）
+        // 封面图片（使用高品质缩略图）
         if (result.imagesWithUrls.length > 0) {
           const firstImage = result.imagesWithUrls[0];
-          result.coverImage = firstImage.thumbnail;  // 缩略图
+          result.coverImage = firstImage.thumbnailHQ || firstImage.thumbnail;  // 优先使用高品质缩略图
           result.coverImageOriginal = firstImage.url; // 原图
           result.coverImageById = firstImage.url;
           result.coverImageProxy = firstImage.proxyUrl;

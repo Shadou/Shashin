@@ -3,6 +3,7 @@ const sharp = require('sharp');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const thumbnailConfig = require('../config/thumbnailConfig');
 
 class ImageProcessor {
   constructor() {
@@ -46,31 +47,7 @@ class ImageProcessor {
     return path.join(thumbDir, thumbName);
   }
 
-  /**
-   * 检查是否需要生成缩略图
-   */
-  shouldCreateThumbnail(filePath, options = {}) {
-    // 检查文件是否为图片
-    const imageExts = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'];
-    const ext = path.extname(filePath).toLowerCase();
-    
-    if (!imageExts.includes(ext)) {
-      return false;
-    }
-
-    // 检查文件大小（大于200KB才生成缩略图）
-    try {
-      const stats = fs.statSync(filePath);
-      return stats.size > 200 * 1024; // 200KB
-    } catch (error) {
-      return false;
-    }
-  }
-
-  /**
-   * 生成缩略图
-   */
-  // utils/imageProcessor.js - 添加错误处理
+  // utils/imageProcessor.js - 进一步提高默认选项
 async createThumbnail(filePath, options = {}) {
   const cacheKey = `${filePath}-${JSON.stringify(options)}`;
   
@@ -99,18 +76,22 @@ async createThumbnail(filePath, options = {}) {
     return Promise.resolve(thumbPath);
   }
 
-  // 设置默认选项
   const defaultOptions = {
-    width: 1280,
-    height: 1280,
-    quality: 90,
+    ...thumbnailConfig.defaults.detail,
     fit: 'inside',
     withoutEnlargement: true,
   };
 
+  // 合并用户选项
   const config = { ...defaultOptions, ...options };
   
-  console.log(`开始生成缩略图: ${filePath} -> ${thumbPath}`);
+  // 根据文件格式应用特定配置
+  const ext = path.extname(filePath).toLowerCase();
+  if (thumbnailConfig.formatSpecific[ext]) {
+    Object.assign(config, thumbnailConfig.formatSpecific[ext]);
+  }
+  
+  console.log(`开始生成缩略图: ${filePath}, 配置: ${JSON.stringify(config)}`);
   
   // 创建处理 Promise
   const processPromise = (async () => {
@@ -118,46 +99,97 @@ async createThumbnail(filePath, options = {}) {
       // 读取原始图片信息
       const metadata = await sharp(filePath).metadata();
       
+      console.log(`原图信息: ${metadata.width}x${metadata.height}, 格式: ${metadata.format}, 大小: ${(fs.statSync(filePath).size / 1024 / 1024).toFixed(2)}MB`);
+      
       // 如果原始图片小于缩略图尺寸，直接复制
       if (metadata.width <= config.width && metadata.height <= config.height) {
+        console.log(`原图尺寸较小，直接复制: ${metadata.width}x${metadata.height} <= ${config.width}x${config.height}`);
         await fs.promises.copyFile(filePath, thumbPath);
         return thumbPath;
       }
 
-      // 创建缩略图
+      // 创建sharp实例
       let sharpInstance = sharp(filePath);
       
-      // 根据文件格式选择合适的处理方式
+      // 应用格式特定的选项
+      const formatOptions = {};
       const ext = path.extname(filePath).toLowerCase();
       
-      if (ext === '.gif') {
-        // 对于GIF，只处理第一帧
-        sharpInstance = sharpInstance.gif();
-      } else if (ext === '.png') {
-        // 对于PNG，使用PNG压缩
-        sharpInstance = sharpInstance.png({ 
-          compressionLevel: 9,
-          quality: config.quality 
-        });
-      } else {
-        // 默认使用JPEG
-        sharpInstance = sharpInstance.jpeg({ 
+      if (ext === '.jpg' || ext === '.jpeg') {
+        formatOptions.jpeg = {
           quality: config.quality,
-          mozjpeg: true 
-        });
+          mozjpeg: config.mozjpeg || true,
+          chromaSubsampling: config.chromaSubsampling || '4:4:4',
+          trellisQuantisation: config.trellisQuantisation || true,
+          overshootDeringing: config.overshootDeringing || true,
+          optimiseScans: config.optimiseScans || true
+        };
+      } else if (ext === '.png') {
+        formatOptions.png = {
+          quality: config.quality,
+          compressionLevel: config.compressionLevel || 9,
+          progressive: config.progressive || true,
+          palette: config.palette || true
+        };
+      } else if (ext === '.webp') {
+        formatOptions.webp = {
+          quality: config.quality,
+          lossless: config.lossless || false,
+          nearLossless: config.nearLossless || true,
+          alphaQuality: config.alphaQuality || 100
+        };
+      } else if (ext === '.tiff' || ext === '.tif') {
+        formatOptions.tiff = {
+          quality: config.quality,
+          compression: config.compression || 'jpeg',
+          predictor: config.predictor || 'horizontal',
+          pyramid: config.pyramid || false,
+          tile: config.tile || false
+        };
+      } else if (ext === '.gif') {
+        formatOptions.gif = {};
+      }
+      
+      // 应用格式选项
+      Object.keys(formatOptions).forEach(key => {
+        if (formatOptions[key]) {
+          sharpInstance = sharpInstance[key](formatOptions[key]);
+        }
+      });
+      
+      // 构建resize配置
+      const resizeConfig = {
+        width: config.width,
+        height: config.height,
+        fit: config.fit,
+        withoutEnlargement: config.withoutEnlargement
+      };
+      
+      // 使用配置的插值算法
+      if (thumbnailConfig.performance.useLanczosKernel) {
+        resizeConfig.kernel = 'lanczos3';
       }
       
       // 调整尺寸
-      await sharpInstance
-        .resize({
-          width: config.width,
-          height: config.height,
-          fit: config.fit,
-          withoutEnlargement: config.withoutEnlargement,
-        })
-        .toFile(thumbPath);
+      sharpInstance = sharpInstance.resize(resizeConfig);
+      
+      // 应用锐化
+      if (config.sharpen && thumbnailConfig.performance.autoSharpen) {
+        sharpInstance = sharpInstance.sharpen(thumbnailConfig.advanced.sharpenOptions);
+      }
+      
+      // 标准化亮度
+      if (thumbnailConfig.performance.autoNormalize) {
+        sharpInstance = sharpInstance.normalize();
+      }
+      
+      // 处理并保存
+      await sharpInstance.toFile(thumbPath);
 
-      console.log(`缩略图生成成功: ${thumbPath}`);
+      // 获取生成的缩略图信息
+      const thumbMetadata = await sharp(thumbPath).metadata();
+      const thumbSize = fs.statSync(thumbPath).size;
+      console.log(`缩略图生成成功: ${thumbPath}, 尺寸: ${thumbMetadata.width}x${thumbMetadata.height}, 大小: ${(thumbSize / 1024 / 1024).toFixed(2)}MB, 压缩比: ${((thumbSize / fs.statSync(filePath).size) * 100).toFixed(1)}%`);
       return thumbPath;
     } catch (error) {
       console.error(`生成缩略图失败: ${filePath}`, error);
@@ -173,6 +205,32 @@ async createThumbnail(filePath, options = {}) {
   this.processing.set(cacheKey, processPromise);
   
   return processPromise;
+}
+
+// 修改 shouldCreateThumbnail 方法
+shouldCreateThumbnail(filePath, options = {}) {
+  // 检查文件是否为图片
+  const imageExts = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.tif'];
+  const ext = path.extname(filePath).toLowerCase();
+  
+  if (!imageExts.includes(ext)) {
+    return false;
+  }
+
+  try {
+    // 检查文件大小（大于300KB才生成缩略图）
+    const stats = fs.statSync(filePath);
+    const minSize = options.minSize || 300 * 1024; // 300KB
+    
+    // 如果是TIFF格式，总是生成缩略图（因为TIFF通常很大）
+    if (ext === '.tiff' || ext === '.tif') {
+      return true;
+    }
+    
+    return stats.size > minSize;
+  } catch (error) {
+    return false;
+  }
 }
 
   /**
